@@ -1,0 +1,228 @@
+# HIT137 - Assignment 3 - Question 1: Image Editor
+# Developed using Tkinter for GUI, OpenCV for image processing, and PIL for rendering
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+import cv2
+from PIL import Image, ImageTk
+import numpy as np
+
+class ImageEditorApp:
+    def __init__(self, root):
+        root.bind('<Configure>', self.on_resize)
+        self.root = root
+        self.root.title("Image Editor - HIT137")
+        self.root.configure(bg="#1e1e1e")  # Dark background
+
+        # Variables
+        self.image = None
+        self.original_image = None
+        self.tk_image = None
+        self.crop_rect = None
+        self.start_x = self.start_y = 0
+        self.end_x = self.end_y = 0
+        self.undo_stack = []
+        self.redo_stack = []
+        self.crop_ready = False
+        self.cropping_mode = False
+
+        # GUI layout
+        self.canvas = tk.Canvas(root, bg="#2d2d2d", cursor="arrow")  # Neutral canvas background
+        self.canvas.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
+
+        control_frame = tk.Frame(root, bg="#1e1e1e")
+        control_frame.pack(pady=5, fill=tk.X)
+
+        button_style = {"bg": "#3a3a3a", "fg": "white", "activebackground": "#5a5a5a", "relief": tk.FLAT}
+
+        tk.Button(control_frame, text="Load Image", command=self.load_image, **button_style).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Crop", command=self.activate_crop_mode, **button_style).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Save Image", command=self.save_image, **button_style).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Undo", command=self.undo, **button_style).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Redo", command=self.redo, **button_style).pack(side=tk.LEFT, padx=5)
+
+        ttk.Style().configure("TLabel", background="#1e1e1e", foreground="white")
+        ttk.Style().configure("Horizontal.TScale", background="#1e1e1e")
+
+        resize_frame = tk.Frame(root, bg="#1e1e1e")
+        resize_frame.pack(fill='x')
+
+        self.resize_label = ttk.Label(resize_frame, text="Resize")
+        self.resize_label.pack(side=tk.LEFT, padx=(20, 10))
+
+        self.percent_label = ttk.Label(resize_frame, text="100%")
+        self.percent_label.pack(side=tk.RIGHT, padx=(10, 20))
+
+        self.slider = ttk.Scale(resize_frame, from_=0.1, to=2.0, orient="horizontal", command=self.update_resize_display)
+        self.slider.set(1.0)
+        self.slider.pack(fill='x', expand=True, padx=10)
+
+        # Zoom controls
+        zoom_frame = tk.Frame(root, bg="#1e1e1e")
+        zoom_frame.place(relx=1.0, y=10, anchor="ne")
+        tk.Button(zoom_frame, text="+", command=self.zoom_in, **button_style, width=2).pack(side=tk.TOP, pady=2)
+        tk.Button(zoom_frame, text="-", command=self.zoom_out, **button_style, width=2).pack(side=tk.TOP)
+
+        
+
+        self.root.bind("<Control-z>", lambda e: self.undo())
+        self.root.bind("<Control-y>", lambda e: self.redo())
+
+    def update_resize_display(self, value):
+        percent = int(float(value) * 100)
+        self.percent_label.config(text=f"{percent}%")
+        self.resize_image(value)
+
+    def activate_crop_mode(self):
+        self.cropping_mode = True
+        self.canvas.config(cursor="tcross")
+        self.canvas.bind("<Button-1>", self.start_crop)
+        self.canvas.bind("<B1-Motion>", self.draw_crop)
+        self.canvas.bind("<ButtonRelease-1>", self.set_crop_ready)
+
+    def load_image(self):
+        path = filedialog.askopenfilename()
+        if path:
+            self.canvas.delete("all")
+            self.image = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+            self.original_image = self.image.copy()
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.slider.set(1.0)
+            self.display_image(self.image)
+
+    def display_image(self, img):
+        self.current_display_image = img.copy()
+        self.canvas.delete("all")
+        img_pil = Image.fromarray(img)
+
+        # Skip auto-resize
+        self.tk_image = ImageTk.PhotoImage(img_pil)
+
+        # Removed scrollregion config as we're not resizing anymore
+        # Removed fixed canvas sizing since image size is actual
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        image_width = self.tk_image.width()
+        image_height = self.tk_image.height()
+
+        x_center = max((canvas_width - image_width) // 2, 0)
+        y_center = max((canvas_height - image_height) // 2, 0)
+        self.canvas.create_image(x_center, y_center, anchor=tk.NW, image=self.tk_image)
+        self.last_center_coords = (x_center, y_center)
+        self.last_center_coords = (x_center, y_center)
+
+    def start_crop(self, event):
+        if self.cropping_mode:
+            self.start_x, self.start_y = event.x, event.y
+
+    def draw_crop(self, event):
+        if self.cropping_mode:
+            self.canvas.delete("crop_rect")
+            self.crop_rect = self.canvas.create_rectangle(
+                self.start_x, self.start_y, event.x, event.y,
+                outline="white", dash=(4, 2), tag="crop_rect"
+            )
+
+    def set_crop_ready(self, event):
+        if self.cropping_mode:
+            self.end_x, self.end_y = event.x, event.y
+            self.crop_ready = True
+            self.crop_image()
+            self.cropping_mode = False
+            self.canvas.config(cursor="arrow")
+            self.canvas.unbind("<Button-1>")
+            self.canvas.unbind("<B1-Motion>")
+            self.canvas.unbind("<ButtonRelease-1>")
+
+    def crop_image(self):
+        if not self.crop_ready or self.image is None:
+            return
+
+        x1_canvas, y1_canvas = sorted((self.start_x, self.end_x))
+        y1_canvas, y2_canvas = sorted((self.start_y, self.end_y))
+
+        # Get the offset where the image was centered
+        offset_x, offset_y = self.last_center_coords
+
+        # Adjust crop coords to relative image position
+        x1_rel = x1_canvas - offset_x
+        x2_rel = self.end_x - offset_x
+        y1_rel = y1_canvas - offset_y
+        y2_rel = self.end_y - offset_y
+
+        x1, x2 = sorted((x1_rel, x2_rel))
+        y1, y2 = sorted((y1_rel, y2_rel))
+
+        # Clamp the coordinates within image bounds
+        x1 = max(0, min(x1, self.tk_image.width()))
+        x2 = max(0, min(x2, self.tk_image.width()))
+        y1 = max(0, min(y1, self.tk_image.height()))
+        y2 = max(0, min(y2, self.tk_image.height()))
+
+        # Convert to actual image coordinates
+        ratio_x = self.image.shape[1] / self.tk_image.width()
+        ratio_y = self.image.shape[0] / self.tk_image.height()
+        x1_img = int(x1 * ratio_x)
+        x2_img = int(x2 * ratio_x)
+        y1_img = int(y1 * ratio_y)
+        y2_img = int(y2 * ratio_y)
+
+        if x2_img - x1_img > 0 and y2_img - y1_img > 0:
+            self.push_undo(self.image)
+            self.image = self.image[y1_img:y2_img, x1_img:x2_img].copy()
+            self.display_image(self.image)
+
+        self.crop_ready = False
+
+    def resize_image(self, value):
+        if self.image is not None:
+            scale = float(value)
+            new_size = (int(self.image.shape[1] * scale), int(self.image.shape[0] * scale))
+            resized = cv2.resize(self.image, new_size)
+            self.display_image(resized)
+
+    def save_image(self):
+        if self.image is not None:
+            path = filedialog.asksaveasfilename(defaultextension=".png")
+            if path:
+                cv2.imwrite(path, cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR))
+                messagebox.showinfo("Success", "Image saved successfully.")
+
+    def push_undo(self, state):
+        self.undo_stack.append(state.copy())
+        if len(self.undo_stack) > 20:
+            self.undo_stack.pop(0)
+
+    def undo(self):
+        if self.undo_stack:
+            self.redo_stack.append(self.image.copy())
+            last_state = self.undo_stack.pop()
+            self.image = last_state.copy()
+            self.display_image(self.image)
+
+    def on_resize(self, event):
+        if hasattr(self, 'current_display_image'):
+            self.display_image(self.current_display_image)
+
+    def redo(self):
+        if self.redo_stack:
+            self.push_undo(self.image)
+            self.image = self.redo_stack.pop()
+            self.display_image(self.image)
+
+    def zoom_in(self):
+        current = self.slider.get()
+        new_value = min(current + 0.1, 2.0)
+        self.slider.set(new_value)
+
+    def zoom_out(self):
+        current = self.slider.get()
+        new_value = max(current - 0.1, 0.1)
+        self.slider.set(new_value)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ImageEditorApp(root)
+    root.mainloop()
